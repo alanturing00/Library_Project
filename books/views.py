@@ -2,7 +2,10 @@ from django.shortcuts import render
 from django.contrib.auth.models import User
 from rest_framework import generics, status, viewsets, permissions, viewsets
 from rest_framework.permissions import IsAuthenticated
-from .serializers import UserPasswordChangserializer, ReviewSerializer, UserSerializer, UserProfileserializer, BookSerializer, Bookrentalserializer
+from .serializers import (BooksCatalogsSerializer, BooksSerializer, RentalBookSeriliazer,
+                          ReviewSerializer, UserRentalBookSeriliazer, UserProfileUpdateSerializer,
+                          UserPasswordChangserializer, ReviewSerializer, UserSerializer,
+                           UserProfileserializer, BookSerializer, Bookrentalserializer)
 from rest_framework.response import Response
 from .models import Book, Review, UserProfile, Rental
 from .permissions import IsAdminOrReadOnly, IsAuthorOrReadOnly, IsMyAcountOrReadOnly, IsAdmin
@@ -11,10 +14,7 @@ from django.views.generic import DetailView
 from rest_framework.generics import ListAPIView
 
 
-# user stuff:
-
-
-
+# used!
 class ChangePasswordView(generics.UpdateAPIView):
     model = User
     serializer_class =UserPasswordChangserializer
@@ -44,15 +44,138 @@ class ChangePasswordView(generics.UpdateAPIView):
             return Response(serializer.errors,status=status.HTTP_400_BAD_REQUEST)
 
 
-
-class UserProfileView(generics.RetrieveUpdateAPIView):
-    permission_classes = [IsAuthorOrReadOnly,]
-    queryset = UserProfile.objects.all()
-    serializer_class= UserProfileserializer
+# used!
+class BooksCatalogs(generics.ListAPIView):
+    serializer_class= BooksCatalogsSerializer
+    permission_classes= [IsAuthenticated,]
     
+    def get_queryset(self):
+        return Book.objects.all()
+    
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        user_profile = request.user.userprofile
+        user_data = {
+            'username': request.user.username,
+            'photo': user_profile.user_photo.url if user_profile.user_photo else None
+        }
+        catalogs = queryset.values_list('cataloge', flat=True).distinct()
+        data = {'user': user_data, 'books': list(catalogs)}
+        return Response(data)
+    
+
+# used!
+class BooksByCatalogs(generics.ListAPIView):
+    permission_classes= [IsAuthenticated,]
+    serializer_class= BooksSerializer 
+    
+    def get_queryset(self):
+        catalogs= self.kwargs['catalogs']
+        books= Book.objects.filter(cataloge=catalogs)
+        return books
+    
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        user_profile = request.user.userprofile
+        user_data = {
+            'username': request.user.username,
+            'photo': user_profile.user_photo.url if user_profile.user_photo else None
+        }
+        data = {'user': user_data, 'books':BooksSerializer(queryset, many= True).data}
+        return Response(data)
+
+
+
+# used!
+class BookDetails(generics.ListCreateAPIView):
+    permission_classes= [IsAuthenticated,]
+    serializer_class= ReviewSerializer
+
+    def get_queryset(self):
+        book= Book.objects.get(isbn= self.kwargs['isbn'])
+        review= Review.objects.filter(book= book)
+        return review
+    
+    def list(self, request, *args, **kwargs):
+        # profile= UserProfile.objects.get(user= self.request.user)
+        user_profile = request.user.userprofile
+        user_data = {
+            'username': request.user.username,
+            'photo': user_profile.user_photo.url if user_profile.user_photo else None
+        }
+        reviews= self.get_queryset()
+        reviews_serializer= ReviewSerializer(reviews, many=True)
+        book= Book.objects.get(isbn= self.kwargs['isbn'])
+        book_serializer = BooksSerializer(book)
+        data = {'user': user_data, 'books': book_serializer.data, 'reviews': reviews_serializer.data}
+        return Response(data)
+    
+    def post(self, request, *args, **kwargs):
+        profile= UserProfile.objects.get(user= self.request.user)
+        book= Book.objects.get(isbn= self.kwargs['isbn'])
+        seriliazer= ReviewSerializer(data= request.data)
+        if seriliazer.is_valid():
+            seriliazer.save( user= profile, book= book)
+            return Response(seriliazer.data, status=status.HTTP_201_CREATED)
+        return Response({"error": "an error occurred during save the comment!"}, status=status.HTTP_400_BAD_REQUEST)
+    
+
+# used!
+class UserProfileView(generics.ListAPIView):
+    permission_classes = (IsAuthenticated,)
+    serializer_class = UserProfileserializer
+
+    def get_queryset(self):
+        user = self.request.user
+        profile = UserProfile.objects.get(user=user)
+        return Rental.objects.filter(user=profile)
+
+    def list(self, request, *args, **kwargs):
+        queryset = self.get_queryset()
+        user = self.request.user
+        profile = UserProfile.objects.get(user=user)
+        user_books_serializer = UserRentalBookSeriliazer(queryset, many=True)
+        profile_serializer = UserProfileserializer(profile)
+        user_serializer = UserSerializer(user)
+
+        data = {
+            'user': user_serializer.data['username'],
+            'profile': profile_serializer.data,
+            'rental_book': user_books_serializer.data
+        }
+        return Response(data)
+
+# used!
+class UserProfileUpdate(generics.RetrieveUpdateAPIView):
+    permission_classes= [IsAuthenticated,]
+    serializer_class= UserProfileUpdateSerializer
+
     def get_object(self):
-        # Retrieve the user profile associated with the authenticated user
-        return self.request.user.userprofile
+        user= self.request.user
+        return UserProfile.objects.get(user=user)
+
+
+# used!
+class RentalBook(generics.CreateAPIView):
+    permission_classes= (IsAuthenticated,)
+    serializer_class= RentalBookSeriliazer
+
+    def create(self, request, *args, **kwargs):
+        profile= UserProfile.objects.get(user= self.request.user)
+        book= Book.objects.get(isbn= self.kwargs['isbn'])
+        serializer= RentalBookSeriliazer(data= request.data)
+        if serializer.is_valid():
+            # user only have one object of the same book:
+            try:
+                B= Rental.objects.get(user= profile, book=book)
+                return Response({"error": "You alredy rent this book!"}, status=status.HTTP_400_BAD_REQUEST)
+            
+            except Rental.DoesNotExist:
+                serializer.save(user= profile, book= book)
+                return Response(serializer.data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
 
 class UserProfileViews(generics.RetrieveAPIView):
     serializer_class = UserProfileserializer
@@ -131,6 +254,7 @@ class BookRentalAdmin(generics.ListCreateAPIView):
 class BookRental(generics.CreateAPIView):
     permission_classes= [IsAuthenticated,]
     serializer_class= Bookrentalserializer
+    
     def create(self, request, *args, **kwargs):
         book_id = self.kwargs['pk']
         user_id = get_object_or_404(UserProfile, user=request.user)
